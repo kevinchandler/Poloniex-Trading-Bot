@@ -2,7 +2,6 @@
 # Implement min volume btc & eth for bot to function
 
 
-
 module Bot
 
   ETH_SELL_RANGE  = [0.0161..1]
@@ -22,6 +21,35 @@ module Bot
   # Current open orders on account
   def self.current_orders
     JSON.parse Poloniex.open_orders(CURRENCY)
+  end
+
+  # Trading
+
+  # have btc to buy eth
+  def self.can_buy?
+    btc_balance = JSON.parse(Poloniex.balances)['BTC'].to_f
+    btc_balance > 0.1
+  end
+
+  # have eth to sell btc
+  def self.can_sell?
+    eth_balance = JSON.parse(Poloniex.balances)['ETH'].to_f
+    eth_balance > 0.1
+  end
+
+  def self.cancel_orders(order_type)
+    raise "`order_type` can be either 'buy' or 'sell'" unless ['buy', 'sell'].include? order_type
+
+    open_orders = JSON.parse Poloniex.open_orders(CURRENCY)
+    buy_orders = open_orders.select { |o| o['type'] == 'buy' }
+    sell_orders = open_orders.select { |o| o['type'] == 'sell' }
+    orders_to_cancel = order_type == 'buy' && buy_orders || sell_orders
+
+    orders_to_cancel.each do |order|
+      cancel = JSON.parse(Poloniex.cancel_order(CURRENCY, order['orderNumber']))
+      raise cancel['error'] if cancel['success'] == 0
+      puts cancel['message'] if cancel['success'] == 1
+    end
   end
 
 
@@ -69,12 +97,11 @@ module Bot
     ask_prices.reduce(:+)
   end
 
-  def self.info
-    bids_avg = self.bids_average
-    asks_avg = self.asks_average
-
-    binding.pry
-  end
+  # TODO
+  # def self.info
+  #   bids_avg = self.bids_average
+  #   asks_avg = self.asks_average
+  # end
 
   private
 
