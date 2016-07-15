@@ -36,11 +36,11 @@ module Bot
   end
 
   def self.asks
-    self.order_book['asks'].map(&:to_f)
+    self.order_book['asks'].map! { |ask| [ask[0].to_f, ask[1].to_f] }
   end
 
   def self.bids
-    self.order_book['bids'].map(&:to_f)
+    self.order_book['bids'].map! { |bid| [bid[0].to_f, bid[1].to_f] }
   end
 
   def self.bids_average
@@ -130,11 +130,18 @@ module Bot
     end
   end
 
-  # TODO
-  # def self.info
-  #   bids_avg = self.bids_average
-  #   asks_avg = self.asks_average
-  # end
+  def self.optimal_price(order_type)
+    orders = case order_type
+    when 'buy'
+      self.bids
+    when 'sell'
+      self.asks
+    else
+      raise "'order_type' can be either 'buy' or 'sell'" unless ['buy', 'sell'].include? order_type
+    end
+
+    orders.sort_by { |order| order[1] }.reverse.first(3).last[0]
+  end
 
   private
 
