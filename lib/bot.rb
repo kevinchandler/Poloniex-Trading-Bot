@@ -4,8 +4,8 @@
 
 module Bot
 
-  ETH_SELL_RANGE  = [0.0161..1]
-  ETH_BUY_RANGE   = [0.0151..0.0159]
+  ETH_SELL_RANGE  = { min: 0.0161, max: 1 }
+  ETH_BUY_RANGE   = { min: 0.0151, max: 0.0159 }
   CURRENCY        = "BTC_ETH"
 
   # return current ticker hash for currency
@@ -23,20 +23,24 @@ module Bot
     JSON.parse Poloniex.open_orders(CURRENCY)
   end
 
+  def self.last_price
+    self.ticker['last'].to_f
+  end
+
   def self.day_high
-    self.ticker['high24hr']
+    self.ticker['high24hr'].to_f
   end
 
   def self.day_low
-    self.ticker['low24hr']
+    self.ticker['low24hr'].to_f
   end
 
   def self.asks
-    self.order_book['asks']
+    self.order_book['asks'].map(&:to_f)
   end
 
   def self.bids
-    self.order_book['bids']
+    self.order_book['bids'].map(&:to_f)
   end
 
   def self.bids_average
@@ -81,8 +85,28 @@ module Bot
     eth_balance > 0.1
   end
 
+  def self.prices_within_range?(order_type)
+    last_price = self.last_price
+    case order_type
+    when 'buy'
+      puts "Last price was: #{last_price}"
+      puts "Max buy price set at: #{ETH_BUY_RANGE[:max]}"
+      within_range = last_price <= ETH_BUY_RANGE[:max]
+      puts "Within buying range: #{within_range}"
+      return within_range
+    when 'sell'
+      puts "Last price was: #{last_price}"
+      puts "Minimum sell price set at: #{ETH_BUY_RANGE[:min]}"
+      within_range = last_price >= ETH_SELL_RANGE[:min]
+      puts "Within selling range: #{within_range}"
+      return within_range
+    else
+      raise "'order_type' can be either 'buy' or 'sell'"
+    end
+  end
+
   def self.cancel_orders(order_type)
-    raise "`order_type` can be either 'buy' or 'sell'" unless ['buy', 'sell'].include? order_type
+    raise "'order_type' can be either 'buy' or 'sell'" unless ['buy', 'sell'].include? order_type
 
     my_orders = self.my_orders
     buy_orders = my_orders.select { |o| o['type'] == 'buy' }
