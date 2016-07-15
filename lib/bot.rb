@@ -14,44 +14,14 @@ module Bot
   end
 
   # 2D array of bids/asks
-  def self.orders
+  def self.order_book
     JSON.parse Poloniex.order_book(CURRENCY)
   end
 
-  # Current open orders on account
-  def self.current_orders
+  # Open orders from self
+  def self.my_orders
     JSON.parse Poloniex.open_orders(CURRENCY)
   end
-
-  # Trading
-
-  # have btc to buy eth
-  def self.can_buy?
-    btc_balance = JSON.parse(Poloniex.balances)['BTC'].to_f
-    btc_balance > 0.1
-  end
-
-  # have eth to sell btc
-  def self.can_sell?
-    eth_balance = JSON.parse(Poloniex.balances)['ETH'].to_f
-    eth_balance > 0.1
-  end
-
-  def self.cancel_orders(order_type)
-    raise "`order_type` can be either 'buy' or 'sell'" unless ['buy', 'sell'].include? order_type
-
-    open_orders = JSON.parse Poloniex.open_orders(CURRENCY)
-    buy_orders = open_orders.select { |o| o['type'] == 'buy' }
-    sell_orders = open_orders.select { |o| o['type'] == 'sell' }
-    orders_to_cancel = order_type == 'buy' && buy_orders || sell_orders
-
-    orders_to_cancel.each do |order|
-      cancel = JSON.parse(Poloniex.cancel_order(CURRENCY, order['orderNumber']))
-      raise cancel['error'] if cancel['success'] == 0
-      puts cancel['message'] if cancel['success'] == 1
-    end
-  end
-
 
   def self.day_high
     self.ticker['high24hr']
@@ -62,11 +32,11 @@ module Bot
   end
 
   def self.asks
-    self.orders['asks']
+    self.order_book['asks']
   end
 
   def self.bids
-    self.orders['bids']
+    self.order_book['bids']
   end
 
   def self.bids_average
@@ -95,6 +65,35 @@ module Bot
     ask_prices = []
     asks.each { |bid| ask_prices << bid[1] }
     ask_prices.reduce(:+)
+  end
+
+  # Trading
+
+  # have btc to buy eth
+  def self.can_buy?
+    btc_balance = JSON.parse(Poloniex.balances)['BTC'].to_f
+    btc_balance > 0.1
+  end
+
+  # have eth to sell btc
+  def self.can_sell?
+    eth_balance = JSON.parse(Poloniex.balances)['ETH'].to_f
+    eth_balance > 0.1
+  end
+
+  def self.cancel_orders(order_type)
+    raise "`order_type` can be either 'buy' or 'sell'" unless ['buy', 'sell'].include? order_type
+
+    my_orders = self.my_orders
+    buy_orders = my_orders.select { |o| o['type'] == 'buy' }
+    sell_orders = my_orders.select { |o| o['type'] == 'sell' }
+    orders_to_cancel = order_type == 'buy' && buy_orders || sell_orders
+
+    orders_to_cancel.each do |order|
+      cancel = JSON.parse(Poloniex.cancel_order(CURRENCY, order['orderNumber']))
+      raise cancel['error'] if cancel['success'] == 0
+      puts cancel['message'] if cancel['success'] == 1
+    end
   end
 
   # TODO
