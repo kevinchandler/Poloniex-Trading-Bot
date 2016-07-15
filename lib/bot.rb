@@ -76,29 +76,39 @@ module Bot
   # have btc to buy eth
   def self.can_buy?
     btc_balance = JSON.parse(Poloniex.balances)['BTC'].to_f
-    btc_balance > 0.1
+    has_enough = btc_balance > 0.1
+    puts "BTC balance: #{btc_balance}"
+    puts "Have enough BTC to make purchase?: #{has_enough}"
+    self.prices_within_range?('buy') && has_enough
   end
 
   # have eth to sell btc
   def self.can_sell?
     eth_balance = JSON.parse(Poloniex.balances)['ETH'].to_f
-    eth_balance > 0.1
+    has_enough = eth_balance > 0.1
+    puts "ETH balance: #{eth_balance}"
+    puts "Have enough ETH to sell?: #{has_enough}"
+    self.prices_within_range?('sell') && has_enough
   end
 
   def self.prices_within_range?(order_type)
     last_price = self.last_price
     case order_type
     when 'buy'
+      puts "*****"
       puts "Last price was: #{last_price}"
       puts "Max buy price set at: #{ETH_BUY_RANGE[:max]}"
       within_range = last_price <= ETH_BUY_RANGE[:max]
       puts "Within buying range: #{within_range}"
+      puts "*****"
       return within_range
     when 'sell'
+      puts "*****"
       puts "Last price was: #{last_price}"
       puts "Minimum sell price set at: #{ETH_BUY_RANGE[:min]}"
       within_range = last_price >= ETH_SELL_RANGE[:min]
       puts "Within selling range: #{within_range}"
+      puts "*****"
       return within_range
     else
       raise "'order_type' can be either 'buy' or 'sell'"
