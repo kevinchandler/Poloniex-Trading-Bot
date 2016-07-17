@@ -1,365 +1,230 @@
-# TODO
-# Estimated value of holdings: $403.04 USD / 0.60625362 BTC
-# 8:37pm friday 7/15 Estimated value of holdings: $383.60 USD / 0.57275545 BTC
-# 10:00pm friday 7/15 Estimated value of holdings: $383.71 USD / 0.57326096 BTC
-# .97
-# Estimated value of holdings: $622.57 USD / 0.93038504 BTC
+class Bot
 
-
-
-# Get last buy and sell prices and set Order.last_xxx_price
-
-class Order
-  attr_accessor :last_buy_price, :last_sell_price
+  CURRENCY_PAIR = "BTC_ETH"
+  SLEEP_TIME = { min: 0.5, max: 2, new_round: 150 }
+  PERCENTAGES = { gain: 1.5, loss: -3.5 }
 
   def initialize
-    @last_buy_price = nil
-    @last_sell_price = nil
-  end
-end
-
-
-
-module Bot
-
-  ETH_SELL_RANGE      = { min: 0.0155, max: 1 }
-  ETH_BUY_RANGE       = { min: 0.0151, max: 0.019 }
-  CURRENCY            = "BTC_ETH"
-  MIN_GAIN_PERCENTAGE = 0.35
-  MAX_LOSS_PERCENTAGE = -1.0
-  ORDER               = Order.new
-
-  # return current ticker hash for currency
-  def self.ticker
-    JSON.parse(Poloniex.ticker)[CURRENCY]
+    @my_wallet      = { BTC: nil, ETH: nil }
+    @my_last_price  = { buy: nil, sell: nil }
+    @optimal_price  = { buy: nil, sell: nil }
   end
 
-  # 2D array of bids/asks
-  def self.order_book
-    JSON.parse Poloniex.order_book(CURRENCY)
+  def intialize_trading_session
+
+    # set last buy/sell prices
+    trades = JSON.parse(Poloniex.trade_history(CURRENCY_PAIR)) rescue nil
+    raise "Unable to retrieve trading data" unless trades
+
+    @my_last_price[:buy] = trades.select { |t| t['type'] == 'buy' }.first['rate'].to_f
+    @my_last_price[:sell] = trades.select { |t| t['type'] == 'sell' }.first['rate'].to_f
+
+    if @my_last_price[:sell].nil? || @my_last_price[:buy].nil?
+      raise "Unable to set trading data"
+    end
+
+    sleep SLEEP_TIME[:max]
+
+    # set wallet balances
+    @my_wallet[:BTC] = my_balance("BTC")
+    @my_wallet[:ETH] = my_balance("ETH")
+
+    sleep SLEEP_TIME[:max]
+
+    # cancel any outstanding orders
+    cancel_orders 'buy'
+    cancel_orders 'sell'
+
+    sleep SLEEP_TIME[:max]
+
+    # set optimal prices to buy / sell
+    @optimal_price[:buy] = self.optimal_price_to('buy').to_f
+    @optimal_price[:sell] = self.optimal_price_to('sell').to_f
+
+    if @optimal_price[:sell].nil? || @optimal_price[:buy].nil?
+      raise "Failed to set optimal buy/sell prices"
+    end
+
+    sleep SLEEP_TIME[:max]
+  end
+
+
+  def trade
+    while true
+      system 'clear'
+      puts "**********************"
+      puts "Starting Trade Session"
+      puts "**********************"
+
+      intialize_trading_session
+      place_order 'sell' if has_balance?('sell') && should_sell?
+      place_order 'buy' if has_balance?('buy') && should_buy?
+
+      puts "Sleeping #{SLEEP_TIME[:new_round] / 60} minutes"
+      sleep SLEEP_TIME[:new_round]
+    end
+  end
+
+  protected
+
+  def place_order(order_type)
+    check_order_type order_type
+    currency = currency_for order_type
+    amount = @my_wallet[currency.to_sym] / @optimal_price[order_type.to_sym].round(2)
+    retries = 0
+    begin
+      order = case order_type
+      when 'buy'
+        JSON.parse(Poloniex.buy(CURRENCY_PAIR, @optimal_price[order_type.to_sym], amount))
+      when 'sell'
+        JSON.parse(Poloniex.sell(CURRENCY_PAIR, @optimal_price[order_type.to_sym], amount))
+      end
+      error = order['error'] rescue nil
+      raise error unless error.nil?
+    rescue => e
+      puts e.message
+      puts "retrying to place #{order_type} order"
+      retries += 1
+      retry if retries < 10
+    ensure
+      sleep SLEEP_TIME[:min]
+    end
+  end
+
+  def cancel_orders(order_type)
+    check_order_type order_type
+
+    orders = my_orders
+    buys = orders.select { |o| o['type'] == 'buy' }
+    sells = orders.select { |o| o['type'] == 'sell' }
+    orders_to_cancel = order_type == 'buy' && buys || sells
+
+    cancel_order = -> (order) do
+      begin
+        cancel = JSON.parse(Poloniex.cancel_order(CURRENCY_PAIR, order['orderNumber']))
+        if cancel && cancel.kind_of?(JSON) && cancel['error']
+          raise cancel['error']
+        end
+      rescue => e
+        puts "cancel_orders\n#{e}"
+      ensure
+        sleep SLEEP_TIME[:min]
+      end
+      true
+    end
+
+    orders_to_cancel.each  { |order| cancel_order.call order }
+  end
+
+  def should_sell?
+    # Difference between my last BUY price and the optimal SELL price
+    pct_diff = self.class.calculate_percentage_diff @optimal_price[:sell], @my_last_price[:buy]
+
+    puts "---------------------"
+    puts "Should we sell?"
+    puts "Last buy price: #{@my_last_price[:buy]}"
+    puts "Optimal sell price: #{@optimal_price[:sell]}"
+    puts "PCT DIFF: #{pct_diff}"
+    puts "Acceptable loss? #{(pct_diff <= PERCENTAGES[:loss])}"
+    puts "Acceptable gain? #{(pct_diff >= PERCENTAGES[:gain])}"
+    puts "---------------------"
+
+    # SELL if we can gain enough or accept a loss
+    (pct_diff >= PERCENTAGES[:gain]) || (pct_diff <= PERCENTAGES[:loss])
+  end
+
+  def should_buy?
+    # Difference between my last SELL price and the optimal BUY price
+    pct_diff = self.class.calculate_percentage_diff @my_last_price[:sell], @optimal_price[:buy]
+
+    puts "---------------------"
+    puts "Should we buy?"
+    puts "Last sell price: #{@my_last_price[:sell]}"
+    puts "Optimal buy price: #{@optimal_price[:buy]}"
+    puts "PCT DIFF: #{pct_diff}"
+    puts "Acceptable loss? #{(pct_diff <= PERCENTAGES[:loss])}"
+    puts "Acceptable gain? #{(pct_diff >= PERCENTAGES[:gain])}"
+    puts "---------------------"
+
+    # BUY if we can gain enough or accept a loss
+    (pct_diff >= PERCENTAGES[:gain]) || (pct_diff <= PERCENTAGES[:loss])
+  end
+
+
+  def has_balance?(order_type)
+    check_order_type order_type
+    currency = currency_for order_type
+    @my_wallet[currency.to_sym] >= optimal_price_to(order_type)
   end
 
   # Open orders from self
-  def self.my_orders
-    orders = JSON.parse Poloniex.open_orders(CURRENCY)
+  def my_orders
+    orders = JSON.parse Poloniex.open_orders(CURRENCY_PAIR)
     if orders && orders.kind_of?(JSON) && orders['error']
       raise orders['error']
     end
-    sleep 0.25
+
+    sleep SLEEP_TIME[:min]
     return orders
   end
 
-  def self.cancel_orders(order_type)
-    raise "'order_type' can be either 'buy' or 'sell'" unless ['buy', 'sell'].include? order_type
-
-    my_orders = self.my_orders
-    buy_orders = my_orders.select { |o| o['type'] == 'buy' }
-    sell_orders = my_orders.select { |o| o['type'] == 'sell' }
-    orders_to_cancel = order_type == 'buy' && buy_orders || sell_orders
-    self.log "Canceling #{order_type.upcase} orders"
-
-    orders_to_cancel.each do |order|
-      begin
-        self.cancel_order(order)
-      rescue => e
-        self.log "cancel_orders\n#{e}"
-      end
-    end
-
-    true
+  def my_current_bid_price
+    my_buys = my_orders.select { |order| order['type'] == 'buy' }
+    my_buys.map { |buy| buy['rate'].to_f }.max
   end
 
-  def self.cancel_order(order)
-    cancel = JSON.parse(Poloniex.cancel_order(CURRENCY, order['orderNumber']))
-    sleep 0.5
-    if cancel && cancel.kind_of?(JSON) && cancel['error']
-      raise cancel['error']
-    end
+  def my_current_ask_price
+    my_sells = my_orders.select { |order| order['type'] == 'sell' }
+    my_sells.map { |sell| sell['rate'].to_f }.max
   end
 
-  def self.last_price
-    self.ticker['last'].to_f
-  end
-
-  def self.day_high
-    self.ticker['high24hr'].to_f
-  end
-
-  def self.day_low
-    self.ticker['low24hr'].to_f
-  end
-
-  def self.asks
-    self.order_book['asks'].map! { |ask| [ask[0].to_f, ask[1].to_f] }
-  end
-
-  def self.bids
-    self.order_book['bids'].map! { |bid| [bid[0].to_f, bid[1].to_f] }
-  end
-
-  def self.balance(currency)
-    sleep 1.5
-    JSON.parse(Poloniex.balances)[currency.upcase].to_f
-  end
-
-  # Trading
-
-  def self.set_trading_data
-    trades = JSON.parse(Poloniex.trade_history("BTC_ETH")) rescue nil
-    raise "Trades not set" unless trades
-
-    # grab the max of the last 6 buy/sells since we purchase in small quantities
-    last_buy_price = trades.select {|t| t['type'] == 'buy'}.first(6).collect { |trade| trade['rate'].to_f }.max
-    last_sell_price = trades.select {|t| t['type'] == 'sell'}.first(6).collect { |trade| trade['rate'].to_f }.max
-
-    ORDER.last_sell_price = last_sell_price
-    ORDER.last_buy_price = last_buy_price
-
-    if ORDER.last_sell_price.nil? || ORDER.last_buy_price.nil?
-      raise "last buy or last sell prices not set"
-    end
-  end
-
-  def self.trade
-    begin
-      self.set_trading_data
-      while true
-        rounds = rand(100..1000)
-        puts "Starting Bitcoin: #{self.balance('BTC')}"
-        puts "Starting ETH: #{self.balance('ETH')}"
-
-        rounds.times do |trading_round_number|
-          begin
-            system 'clear'
-            puts "**********************"
-            puts "Starting Trade Session #{trading_round_number} of #{rounds}"
-            puts "**********************"
-            sleep 1.5
-
-            my_orders = self.my_orders
-            my_buys = my_orders.select { |order| order['type'] == 'buy' }
-            my_sells = my_orders.select { |order| order['type'] == 'sell' }
-            my_current_bid_price = my_buys.map { |buy| buy['rate'].to_f }.max
-            my_current_ask_price = my_sells.map { |sell| sell['rate'].to_f }.max
-            optimal_buy_price = self.optimal_price_to('buy').to_f
-            optimal_sell_price = self.optimal_price_to('sell').to_f
-            sleep 1.5
-
-            # Cancel buy orders if we should be buying for a lower price
-            if my_current_bid_price
-              puts "my current bid: #{my_current_bid_price}"
-              begin
-                within_threshold = my_current_ask_price && (my_current_ask_price - optimal_buy_price) > 6000 || false
-                puts "Within cancel buys threshold?: #{within_threshold}"
-                if within_threshold || my_current_bid_price > optimal_buy_price
-                  cancel = self.cancel_orders 'buy'
-                end
-              rescue => e
-                self.log e.message
-              end
-            end
-
-            # Cancel sell orders if we should be selling for a higher price
-            if my_current_ask_price
-              puts "my current ask: #{my_current_ask_price}"
-              begin
-                # TODO implement within_threshold
-                if my_current_ask_price > optimal_sell_price
-                  cancel = self.cancel_orders 'sell'
-                  sleep 1
-                end
-              rescue => e
-                self.log e
-              end
-            end
-
-            if self.can_buy?
-              self.log 'trade#can_buy?'
-              begin
-                if self.should_buy?(optimal_buy_price)
-                  sleep 1
-                  btc_balance = self.balance 'BTC'
-                  amount_to_buy = (btc_balance / optimal_buy_price).round(3)
-                  amount_to_buy = amount_to_buy / [1,2,5,6].sample
-                  retries = 0
-                  begin
-                    buy = JSON.parse(Poloniex.buy(CURRENCY, optimal_buy_price, amount_to_buy))
-                    error = buy['error'] rescue nil
-                    raise error unless error.nil?
-                    ORDER.last_buy_price = optimal_buy_price
-
-                    # sleep inbetween orders
-                    sleep 1.minute
-                  rescue => e
-                    puts e.message
-                    puts 'retrying buy'
-                    retries += 1
-                    sleep 2
-                    retry if retries < 10
-                  end
-                  sleep 1
-                end
-              rescue => e
-                puts 'can_buy?'
-                self.log e.message
-              end
-            end
-
-            sleep 2
-            if self.can_sell?
-              self.log 'trade#can_sell?'
-              begin
-                if should_sell?(optimal_sell_price)
-                  sleep 1
-                  eth_balance = self.balance('ETH')
-                  amount_to_sell = eth_balance / [1,2,3].sample
-                  retries = 0
-                  begin
-                    sell = JSON.parse(Poloniex.sell(CURRENCY, optimal_sell_price, amount_to_sell))
-                    error = sell['error'] rescue nil
-                    raise error unless error.nil?
-                    ORDER.last_sell_price = optimal_sell_price
-
-                    # sleep inbetween orders
-                    sleep 10
-                  rescue => e
-                    puts e.message
-                    puts 'retrying sell'
-                    sleep 2
-                    retries += 1
-                    retry if retries < 10
-                  end
-                  sleep 1
-                else
-                  self.log "profit/loss not enough to sell"
-                end
-              rescue => e
-                puts 'can_sell?'
-                self.log e
-              end
-            end
-
-          rescue => e
-            puts 'round error'
-            self.log e.backtrace
-          ensure
-            # sleep (1..3).to_a.sample.minutes
-            sleep 10.seconds
-          end
-        end
-
-        # cancel orders after trading rounds are over
-        self.cancel_orders 'buy'
-        self.cancel_orders 'sell'
-        puts "Ending Bitcoin: #{self.balance('BTC')}"
-        puts "Ending ETH: #{self.balance('ETH')}"
-
-        # take a break
-        sleep 10.minutes
-      end
-    rescue => e
-      puts e.message
-      puts "Retrying in 2 minutes"
-      sleep 2.minutes
-      retry
-    end
-  end
-
-  def self.should_sell?(optimal_price_to_sell)
-    # difference between my last BUY price and the optimal SELL price
-    pct_diff = self.calculate_percentage_diff optimal_price_to_sell, ORDER.last_buy_price
-
-    # SELL if we can gain enough or accept a loss
-    should_sell = pct_diff >= MIN_GAIN_PERCENTAGE || pct_diff <= MAX_LOSS_PERCENTAGE
-    self.log "Should_sell?: #{should_sell}"
-
-    should_sell
-  end
-
-  def self.should_buy?(optimal_price_to_buy)
-    # difference between my last SELL price and the optimal BUY price
-    pct_diff = self.calculate_percentage_diff ORDER.last_sell_price, optimal_price_to_buy
-
-    # BUY if we can gain enough or accept a loss
-    should_buy = pct_diff >= MIN_GAIN_PERCENTAGE || pct_diff <= MAX_LOSS_PERCENTAGE
-    self.log "Should_buy?: #{should_buy}"
-
-    should_buy
-  end
-
-  # have btc to buy eth
-  def self.can_buy?
-    btc_balance = self.balance('BTC').to_f
-    has_enough = btc_balance > self.optimal_price_to('buy')
-    sleep 0.75
-    self.prices_within_range?('buy') && has_enough
-  end
-
-  # have eth to sell btc
-  def self.can_sell?
-    eth_balance = self.balance('ETH').to_f
-    has_enough = eth_balance > self.optimal_price_to('sell')
-    sleep 0.75
-    self.prices_within_range?('sell') && has_enough
-  end
-
-  def self.prices_within_range?(order_type)
-    last_price = self.last_price
-    sleep 0.75
-    case order_type
-    when 'buy'
-      return last_price <= ETH_BUY_RANGE[:max]
-    when 'sell'
-      return last_price >= ETH_SELL_RANGE[:min]
-    else
-      raise "'order_type' can be either 'buy' or 'sell'"
-    end
-  end
-
-  def self.optimal_price_to(order_type)
+  def optimal_price_to(order_type)
     orders = case order_type
     when 'buy'
-      self.bids
+      bids
     when 'sell'
-      self.asks
+      asks
     else
       raise "'order_type' can be either 'buy' or 'sell'" unless ['buy', 'sell'].include? order_type
     end
 
-    price = orders.sort_by { |order| order[1] }.reverse.first(rand(4..18)).sample[0]
-    self.log "Optimal #{order_type.upcase} price: #{price}"
-    price.to_f
+    # grab the prices of 15 most expensive orders and place order for the median
+    prices = orders.sort_by { |order| order[1] }.reverse.first(15).map { |price, vol| price }
+    self.class.calculate_median prices
   end
 
-  # def self.bids_average
-  #   bids = self.bids
-  #   bid_prices = []
-  #   bids.each { |bid| bid_prices << bid[0] }
-  #   self.calculate_average(bid_prices)
-  # end
-  #
-  # def self.bids_volume
-  #   bids = self.bids
-  #   bid_prices = []
-  #   bids.each { |bid| bid_prices << bid[1] }
-  #   bid_prices.reduce(:+)
-  # end
-  #
-  # def self.asks_average
-  #   asks = self.asks
-  #   ask_prices = []
-  #   asks.each { |bid| ask_prices << bid[0] }
-  #   self.calculate_average(ask_prices)
-  # end
-  #
-  # def self.asks_volume
-  #   asks = self.asks
-  #   ask_prices = []
-  #   asks.each { |bid| ask_prices << bid[1] }
-  #   ask_prices.reduce(:+)
-  # end
+  def check_order_type(order_type)
+    raise "'order_type' can be either 'buy' or 'sell'" unless ['buy', 'sell'].include? order_type
+  end
 
-  private
+  # ORDER BOOK
+  def asks
+    self.order_book['asks'].map { |ask| [ask[0].to_f, ask[1].to_f] }
+  end
+
+  def bids
+    self.order_book['bids'].map { |bid| [bid[0].to_f, bid[1].to_f] }
+  end
+
+  # return current ticker hash for currency
+  def ticker
+    JSON.parse(Poloniex.ticker)[CURRENCY_PAIR]
+  end
+
+  # 2D array of bids/asks
+  def order_book
+    JSON.parse Poloniex.order_book(CURRENCY_PAIR)
+  end
+
+  def my_balance(currency)
+    JSON.parse(Poloniex.balances)[currency.upcase].to_f
+  end
+
+  def currency_for(order_type)
+    check_order_type order_type
+    order_type == "buy" ? "BTC" : "ETH"
+  end
+
 
   def self.calculate_percentage_diff(a, b)
     (((a - b) / a) * 100).round(2)
@@ -410,6 +275,10 @@ module Bot
   end
 
   def self.log(msg)
+    puts msg
+  end
+
+  def log(msg)
     puts msg
   end
 
