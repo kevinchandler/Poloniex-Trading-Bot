@@ -3,7 +3,7 @@ class Bot
   attr_accessor :currency_pair, :my_last_price, :my_wallet, :optimal_price
 
   SLEEP_TIME = { min: 0.5, max: 2, new_round: 300 }
-  PERCENTAGES = { gain: 2.6, loss: -4.5 }
+  PERCENTAGES = { gain: 0.10, loss: -4.5 }
   CURRENCY_COMBINATIONS = ['BTC_ETH']#, 'BTC_BTM', 'BTC_LSK']
 
   def initialize
@@ -161,24 +161,24 @@ class Bot
     puts "---------------------"
 
     # SELL if we can gain enough or accept a loss
-    @my_last_price[:buy] == 0 || (pct_diff >= PERCENTAGES[:gain]) #|| (pct_diff <= PERCENTAGES[:loss])
+    (pct_diff >= PERCENTAGES[:gain]) #|| (pct_diff <= PERCENTAGES[:loss])
   end
 
   def should_buy?
     # Difference between my last SELL price and the optimal BUY price
     pct_diff = self.class.calculate_percentage_diff @my_last_price[:sell], @optimal_price[:buy]
-
+    binding.pry
     puts "---------------------"
     puts "Should we buy?"
     puts "Last sell price: #{@my_last_price[:sell]}"
     puts "Optimal buy price: #{@optimal_price[:buy]}"
-    puts "PCT DIFF: #{pct_diff} / #{PERCENTAGES[:gain]}"
+    puts "PCT DIFF: #{pct_diff} / #{PERCENTAGES[:gain] + 1.25}"
     # puts "Acceptable loss? #{(pct_diff <= PERCENTAGES[:loss])}"
     puts "Acceptable gain? #{(pct_diff >= PERCENTAGES[:gain])}"
     puts "---------------------"
 
     # BUY if we can gain enough or accept a loss
-    @my_last_price[:sell] == 0 || (pct_diff >= (PERCENTAGES[:gain] + 1.25)) #|| (pct_diff <= PERCENTAGES[:loss])
+    (pct_diff >= (PERCENTAGES[:gain] - 0.2)) #|| (pct_diff <= PERCENTAGES[:loss])
   end
 
 
